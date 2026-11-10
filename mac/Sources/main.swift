@@ -7,9 +7,29 @@ final class WallpaperWindow: NSWindow {
     override var canBecomeMain: Bool { false }
 }
 
+/// A wallpaper surface is one independent renderer/window mapped to one display.
+/// Settings remains a separate WebView and is not included here.
+final class WallpaperSurface {
+    let window: NSWindow
+    let webView: WKWebView
+    let displayID: CGDirectDisplayID
+    var bounds: CGRect
+    var ready = false
+    var lastIconMessage = ""
+    var restarts = 0
+
+    init(window: NSWindow, webView: WKWebView, displayID: CGDirectDisplayID, bounds: CGRect) {
+        self.window = window
+        self.webView = webView
+        self.displayID = displayID
+        self.bounds = bounds
+    }
+}
+
 final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate {
     private var window: NSWindow!
     private var webView: WKWebView!
+    private var wallpaperSurfaces: [CGDirectDisplayID: WallpaperSurface] = [:]
     private var settingsWindow: NSWindow?
     private var settingsView: WKWebView?
     private var settingsReady = false
@@ -27,6 +47,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WK
     private var lastSettingsIconMessage = ""
     private var lastSettingsStatus = ""
     private var displayBounds = CGRect.zero
+    private var displayBoundsByID: [CGDirectDisplayID: CGRect] = [:]
+    private var displayOrder: [CGDirectDisplayID] = []
     private var latest: [String: Any] = [:]
     private var latestIconStatus = "starting"
     private var latestIconDetail = ""
@@ -207,18 +229,60 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WK
         reload()
     }
 
+    private func makeWallpaperSurface(for screen: NSScreen, displayID: CGDirectDisplayID, bounds: CGRect) -> WallpaperSurface {
+        let view = makeWebView()
+        let surfaceWindow = WallpaperWindow(contentRect: screen.frame, styleMask: .borderless,
+                                             backing: .buffered, defer: false)
+        surfaceWindow.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
+        surfaceWindow.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        surfaceWindow.ignoresMouseEvents = true
+        surfaceWindow.hasShadow = false
+        surfaceWindow.backgroundColor = .black
+        surfaceWindow.contentView = view
+        let surface = WallpaperSurface(window: surfaceWindow, webView: view, displayID: displayID, bounds: bounds)
+        wallpaperSurfaces[displayID] = surface
+        surfaceWindow.orderFrontRegardless()
+        view.load(URLRequest(url: URL(string: "deskland://app/\(activeTheme == "meadow" ? "meadow.html" : "flat.html")?wallpaper=1")!))
+        return surface
+    }
+
+    private func surface(for view: WKWebView) -> WallpaperSurface? {
+        wallpaperSurfaces.values.first { $0.webView === view }
+    }
+
     @objc private func refreshDisplay() {
         let mainID = CGMainDisplayID()
-        guard let screen = NSScreen.screens.first(where: {
-            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == mainID
-        }) else { return }
-        displayBounds = CGDisplayBounds(mainID)
-        if !windowed { window.setFrame(screen.frame, display: true) }
+        let currentScreens = NSScreen.screens.compactMap { screen -> (CGDirectDisplayID, NSScreen, CGRect)? in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            let id = number.uint32Value
+            return (id, screen, CGDisplayBounds(id))
+        }
+        guard let main = currentScreens.first(where: { $0.0 == mainID }) else { return }
+        displayBoundsByID = Dictionary(uniqueKeysWithValues: currentScreens.map { ($0.0, $0.2) })
+        displayOrder = [mainID] + currentScreens.map(\.0).filter { $0 != mainID }
+        displayBounds = main.2
+        if !windowed {
+            let activeIDs = Set(currentScreens.map(\.0))
+            for id in Array(wallpaperSurfaces.keys) where !activeIDs.contains(id) {
+                wallpaperSurfaces[id]?.window.orderOut(nil)
+                wallpaperSurfaces[id]?.webView.configuration.userContentController.removeScriptMessageHandler(forName: "deskland")
+                wallpaperSurfaces.removeValue(forKey: id)
+            }
+            for (id, screen, bounds) in currentScreens where id != mainID {
+                if let surface = wallpaperSurfaces[id] {
+                    surface.bounds = bounds
+                    surface.window.setFrame(screen.frame, display: true)
+                } else {
+                    _ = makeWallpaperSurface(for: screen, displayID: id, bounds: bounds)
+                }
+            }
+        }
+        if !windowed { window.setFrame(main.1.frame, display: true) }
         lastIconMessage = ""
         lastSettingsIconMessage = ""
         let mode = CGDisplayCopyDisplayMode(mainID)
         latest["targetDisplay"] = ["id": mainID, "logicalWidth": displayBounds.width,
-                                    "logicalHeight": displayBounds.height, "scale": screen.backingScaleFactor,
+                                    "logicalHeight": displayBounds.height, "scale": main.1.backingScaleFactor,
                                     "pixelWidth": mode?.pixelWidth ?? 0, "pixelHeight": mode?.pixelHeight ?? 0]
         if settingsReady {
             sendSettings(["t": "screen", "screen": ["w": displayBounds.width, "h": displayBounds.height, "coordinateScale": 1]])
@@ -232,6 +296,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WK
         previousFrames = nil
         previousSample = nil
         webView.load(URLRequest(url: URL(string: "deskland://app/\(activeTheme == "meadow" ? "meadow.html" : "flat.html")?wallpaper=1")!))
+        for surface in wallpaperSurfaces.values {
+            surface.ready = false
+            surface.lastIconMessage = ""
+            surface.webView.load(URLRequest(url: URL(string: "deskland://app/\(activeTheme == "meadow" ? "meadow.html" : "flat.html")?wallpaper=1")!))
+        }
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -273,26 +342,41 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WK
             }
             return
         }
-        guard message.webView === webView, raw == "ready" else { return }
-        ready = true
+        guard raw == "ready" else { return }
         var values: [String: Any] = store.params[activeTheme] ?? [:]
         values["cap30"] = true
-        send(["t": "settings", "v": values])
-        sendPause()
-        lastIconMessage = ""
+        guard let messageView = message.webView else { return }
+        if let secondary = surface(for: messageView) {
+            secondary.ready = true
+            secondary.lastIconMessage = ""
+            sendWallpaper(secondary.webView, ["t": "settings", "v": values])
+            sendWallpaper(secondary.webView, ["t": "pause", "v": !pauseReasons.isEmpty])
+        } else if messageView === webView {
+            ready = true
+            send(["t": "settings", "v": values])
+            sendPause()
+            lastIconMessage = ""
+        } else {
+            return
+        }
         readIcons()
     }
 
     private func send(_ message: [String: Any]) {
         guard ready else { return }
-        webView.callAsyncJavaScript("window.__desklandReceive(message)", arguments: ["message": message],
-                                    in: nil, in: .page) { [weak self] result in
+        sendWallpaper(webView, message)
+    }
+
+    private func sendWallpaper(_ view: WKWebView, _ message: [String: Any]) {
+        view.callAsyncJavaScript("window.__desklandReceive(message)", arguments: ["message": message],
+                                 in: nil, in: .page) { [weak self] result in
             if case .failure = result { self?.latest["bridgeError"] = true }
         }
     }
 
     private func readIcons() {
-        guard ready, !reading, !pauseReasons.contains("sleep"), !pauseReasons.contains("session") else { return }
+        guard (ready || wallpaperSurfaces.values.contains(where: { $0.ready })), !reading,
+              !pauseReasons.contains("sleep"), !pauseReasons.contains("session") else { return }
         reading = true
         iconQueue.async { [weak self] in
             guard let self = self else { return }
@@ -312,7 +396,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WK
                     : self.tr("图标：不可用（查看诊断）", "Icons: unavailable (see diagnostics)")
                 // Windowed mode maps the whole desktop into its viewport for comparison.
                 // Desktop mode uses exact logical coordinates with no rounding.
-                var rectangles = DesktopGeometry.localRectangles(snapshot.rectangles, displayBounds: self.displayBounds)
+                let displays = self.displayOrder.compactMap { self.displayBoundsByID[$0] }
+                var rectangles = DesktopGeometry.localRectangles(snapshot.rectangles, in: displays, for: self.displayBounds)
                 let settingsMessage: [String: Any] = ["t": "icons", "vis": snapshot.status == "ready", "r": rectangles, "iconsScale": 1]
                 if let data = try? JSONSerialization.data(withJSONObject: settingsMessage, options: .sortedKeys),
                    let signature = String(data: data, encoding: .utf8), signature != self.lastSettingsIconMessage {
@@ -332,11 +417,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WK
                     self.lastIconMessage = signature
                     self.send(message)
                 }
+                for surface in self.wallpaperSurfaces.values where surface.ready {
+                    let local = DesktopGeometry.localRectangles(snapshot.rectangles, in: displays, for: surface.bounds)
+                    let surfaceMessage: [String: Any] = ["t": "icons", "vis": snapshot.status == "ready", "r": local]
+                    if let data = try? JSONSerialization.data(withJSONObject: surfaceMessage, options: .sortedKeys),
+                       let signature = String(data: data, encoding: .utf8), signature != surface.lastIconMessage {
+                        surface.lastIconMessage = signature
+                        self.sendWallpaper(surface.webView, surfaceMessage)
+                    }
+                }
             }
         }
     }
 
-    private func sendPause() { send(["t": "pause", "v": !pauseReasons.isEmpty]) }
+    private func sendPause() {
+        let message: [String: Any] = ["t": "pause", "v": !pauseReasons.isEmpty]
+        send(message)
+        for surface in wallpaperSurfaces.values where surface.ready {
+            sendWallpaper(surface.webView, message)
+        }
+    }
     @objc private func togglePause() {
         if pauseReasons.contains("manual") { pauseReasons.remove("manual") } else { pauseReasons.insert("manual") }
         sendPause()
@@ -455,6 +555,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WK
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         if webView === settingsView { settingsReady = false; settingsView?.reload(); return }
+        if let surface = surface(for: webView) {
+            surface.ready = false
+            surface.restarts += 1
+            latest["secondaryWebContentRestarts.\(surface.displayID)"] = surface.restarts
+            guard surface.restarts <= 3 else { latest["fatal.\(surface.displayID)"] = "WebContent repeatedly terminated"; return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(surface.restarts)) { [weak self, weak surface] in
+                guard let self = self, let surface = surface else { return }
+                surface.webView.load(URLRequest(url: URL(string: "deskland://app/\(self.activeTheme == "meadow" ? "meadow.html" : "flat.html")?wallpaper=1")!))
+            }
+            return
+        }
         ready = false
         restarts += 1
         latest["webContentRestarts"] = restarts
@@ -483,6 +594,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, WK
         diagnosticsTimer?.invalidate()
         settingsView?.configuration.userContentController.removeScriptMessageHandler(forName: "deskland")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "deskland")
+        for surface in wallpaperSurfaces.values {
+            surface.webView.configuration.userContentController.removeScriptMessageHandler(forName: "deskland")
+        }
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
     }
