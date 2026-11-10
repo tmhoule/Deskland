@@ -244,6 +244,7 @@
 
   /* ---------- 底栏 ---------- */
   .bottom { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 32px 20px; color: var(--faint); font-size: 11px; }
+  [hidden] { display: none !important; }
   .saved { transition: color .2s; }
   .saved.flash { color: var(--text); }
   .bottom-actions { display: flex; align-items: center; gap: 8px; }
@@ -299,6 +300,7 @@
       <div class="update-copy"><b data-i18n="updateAvailable">有更新可用</b><p id="updateVersion"></p></div>
       <button class="ghost-btn update-action" id="updateProgram" data-i18n="updateProgram">立即更新</button>
     </div>
+    <div class="warn" id="iconPermission" hidden role="status" aria-live="polite"><p id="iconPermissionText"></p><button id="iconPermissionAction"></button></div>
     <div class="warn" id="autostartWarn" hidden role="alert"><p><b data-i18n="autostartBlocked">开机自动启动可能被拦截了</b><br><span id="autostartWarnText"></span></p><button id="autostartWarnOk" data-i18n="gotIt">知道了</button></div>
     <div class="theme-list" id="themes"></div>
   </section>
@@ -329,7 +331,7 @@
     <div class="purchase-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
     <h3 id="purchaseTitle" data-i18n="purchaseTitle">购买壁纸版</h3>
     <p class="sub" id="purchaseTheme"></p>
-    <p class="sub" data-i18n="purchaseMessage">体验版可永久使用沙滩和草地。壁纸版可解锁更多主题，并在同一个 Deskland 中使用。</p>
+    <p class="sub" data-i18n="purchaseMessage">此 Mac 分支提供沙滩和草地。其他主题属于上游 Windows 壁纸版，无法在此 Mac 分支中解锁。</p>
     <div class="actions">
       <button class="ghost-btn" id="purchaseLater" data-i18n="purchaseLater">继续体验</button>
       <button class="ghost-btn primary" id="purchaseWebsite" data-i18n="purchaseWebsite">前往官网</button>
@@ -359,12 +361,20 @@
     <h3 id="helpTitle" data-i18n="helpTitle">使用帮助</h3>
     <p class="sub" data-i18n="helpSubtitle">常见使用问题和解决方法</p>
     <section class="help-article">
-      <h4 data-i18n="helpWallpaperQ">Deskland 频繁闪烁或重启，怎么办？</h4>
-      <p data-i18n="helpWallpaperA">如果系统壁纸会定时自动切换，切换时可能让 Deskland 闪烁或反复重启。请把常规壁纸改成不会自动切换的固定背景。</p>
+      <h4 data-i18n="helpIconsQ">如何让壁纸响应桌面图标？</h4>
+      <p data-i18n="helpIconsA">图标适配需要辅助功能权限。即使不授权，壁纸仍可使用，只是不会响应桌面图标。</p>
       <ol>
-        <li data-i18n="helpWallpaperStep1">打开 Windows 设置 → 个性化 → 背景。</li>
-        <li data-i18n="helpWallpaperStep2">将“个性化设置背景”设为“图片”或“纯色”，不要选择“幻灯片放映”或“Windows 聚焦”。</li>
-        <li data-i18n="helpWallpaperStep3">改完后重新打开 Deskland。</li>
+        <li data-i18n="helpIconsStep1">点击屏幕顶部菜单栏中的 Deskland，再选择“启用图标适配…”，或点击设置页面的权限按钮。</li>
+        <li data-i18n="helpIconsStep2">在“系统设置”→“隐私与安全性”→“辅助功能”中允许 Deskland Preview，然后返回桌面。</li>
+      </ol>
+    </section>
+    <section class="help-article">
+      <h4 data-i18n="helpWallpaperQ">壁纸或图标适配没有正常工作，怎么办？</h4>
+      <p data-i18n="helpWallpaperA">先检查辅助功能权限和菜单栏中的图标状态。如果问题仍然存在，可以尝试重新载入或重启。</p>
+      <ol>
+        <li data-i18n="helpWallpaperStep1">点击菜单栏中的 Deskland，选择“重新载入壁纸”。</li>
+        <li data-i18n="helpWallpaperStep2">如果仍未恢复，选择“退出 Deskland Preview”，然后重新打开应用。</li>
+        <li data-i18n="helpWallpaperStep3">重新打开后，如有需要，再检查辅助功能权限。重新构建应用后可能需要重新授权。</li>
       </ol>
     </section>
     <div class="actions"><button class="ghost-btn primary" id="helpDone" data-i18n="gotIt">知道了</button></div>
@@ -372,7 +382,7 @@
 </div>
 
 <footer class="bottom">
-  <span class="saved" id="saved" data-i18n="autosave">设置会自动保存，并立即应用到桌面</span>
+  <span><span class="saved" id="saved" data-i18n="autosave">设置会自动保存，并立即应用到桌面</span> <button class="ghost-btn" id="retrySave" hidden>重试保存</button></span>
   <div class="bottom-actions">
     <button class="ghost-btn help-button" id="helpOpen" data-i18n-title="helpButtonTitle" title="常见问题" aria-label="Help">?</button>
   </div>
@@ -382,9 +392,27 @@
 <script>
 'use strict';
 const host = window.chrome && window.chrome.webview;
-const send = m => { if (host) host.postMessage(JSON.stringify(m)); };
+let nextSaveRequest = 0;
+const saveRequests = new Map();
+const latestSaveMessages = new Map();
+const saveTypes = new Set(['set', 'reset', 'theme', 'lang', 'autostart']);
+const send = (m, retryFor = []) => {
+  const capability = { share: 'share', shareVideo: 'share', openShare: 'share', revealShare: 'share',
+    autostart: 'autostart', autostartWarnSeen: 'autostart', updateProgram: 'updates', updateCheck: 'updates' }[m.t];
+  if (capability && state.capabilities[capability] === false) return;
+  if (host) {
+    if (state.capabilities.saveAcknowledgement && saveTypes.has(m.t)) {
+      m = { ...m, requestId: ++nextSaveRequest };
+      saveRequests.set(m.requestId, { message: m, status: 'pending', retryFor });
+      latestSaveMessages.set(saveIdentity(m), m);
+      showSaveSummary();
+    }
+    host.postMessage(JSON.stringify(m));
+  }
+};
 
 const state = { registry0: null, registry: null, theme: 'beach', params: {}, screen: null, icons: null,
+  capabilities: {}, iconsScale: null, iconStatus: '', saveConfirmed: false,
   langSetting: 'auto', langSys: 'zh-CN', autostartWarn: false, autostartSw: '',
   updateVersion: '', updateStatus: '', updateProgress: -1, updateError: '' };
 const $ = id => document.getElementById(id);
@@ -463,7 +491,8 @@ async function setLang(code) {
 // 换了语言：界面上的字都重新填一遍（预览不用重新加载）
 function rerenderTexts() {
   if (!state.screen) return;
-  renderHead(); renderThemes(); renderControls(); updateFoot(); shareBusy(shareState); showAutostartWarn(); showUpdate(); updatePurchaseText();
+  renderHead(); renderThemes(); renderControls(); updateFoot(); shareBusy(shareState); showAutostartWarn(); showUpdate(); updatePurchaseText(); showCapabilities();
+  if (state.capabilities.saveAcknowledgement) showSaveSummary();
 }
 $('lang').addEventListener('change', e => {
   state.langSetting = e.target.value;
@@ -522,6 +551,7 @@ $('themes').addEventListener('click', e => {
   if (!b || b.disabled) return;
   if (b.dataset.locked === 'true') { showPurchase(b.dataset.id); return; }
   if (b.dataset.id === state.theme) return;
+  flush();
   state.theme = b.dataset.id;
   send({ t: 'theme', id: state.theme });
   if (seedOf(state.theme) === undefined) setSeed(newSeed(), false);   // 还没有种子：给一个，桌面和预览从一开始就是同一张
@@ -583,7 +613,9 @@ function setParam(key, v) {
     $('p-' + key).classList.toggle('changed', v !== p.default);
   }
   (state.params[state.theme] = state.params[state.theme] || {})[key] = v;
-  pending[key] = v;
+  (pending[state.theme] = pending[state.theme] || {})[key] = v;
+  // Native settings can be destroyed without unload: send before returning.
+  if (state.capabilities.saveAcknowledgement) { flush(); return; }
   // 不用 requestAnimationFrame：窗口在后台或被遮住时它会暂停，消息就积压了
   if (!scheduled) { scheduled = true; setTimeout(flush, 30); }
 }
@@ -602,9 +634,11 @@ $('controls').addEventListener('dblclick', e => {
 function flush() {
   scheduled = false;
   const batch = pending; pending = {};
-  for (const k in batch) send({ t: 'set', theme: state.theme, key: k, value: batch[k] });
-  toPreview({ t: 'settings', v: batch });
-  flashSaved();
+  for (const theme in batch) {
+    for (const k in batch[theme]) send({ t: 'set', theme, key: k, value: batch[theme][k] });
+    if (theme === state.theme) toPreview({ t: 'settings', v: batch[theme] });
+  }
+  if (Object.keys(batch).length && !state.capabilities.saveAcknowledgement) flashSaved();
 }
 let savedT = 0;
 function flashSaved() {
@@ -621,14 +655,14 @@ $('autostartWarnOk').addEventListener('click', () => { state.autostartWarn = fal
 // 开机自启被拦的提醒：宿主只给安全软件的名字，句子按界面语言拼
 function showAutostartWarn() {
   $('autostartWarnText').textContent = state.autostartSw ? t('autostartWarnSw', { sw: state.autostartSw }) : t('autostartWarnGeneric');
-  $('autostartWarn').hidden = !state.autostartWarn;
+  $('autostartWarn').hidden = !state.autostartWarn || state.capabilities.autostart === false;
 }
 
 /* ---------- 程序更新：版本、阶段、进度和错误全部来自宿主 ---------- */
 function showUpdate() {
   const status = state.updateStatus, checking = status === 'checking';
   const busy = status === 'downloading' || status === 'installing';
-  const available = !!status;
+  const available = !!status && state.capabilities.updates !== false;
   $('updateNotice').hidden = !available;
   if (!available) return;
   const percent = state.updateProgress >= 0 && state.updateProgress <= 1 ? Math.round(state.updateProgress * 100) + '%' : '';
@@ -657,10 +691,19 @@ $('updateProgram').addEventListener('click', () => {
 });
 
 /* ---------- 实时预览：iframe 按整块桌面的尺寸排版，再整体缩小 ---------- */
-const toPreview = m => { if (frame.contentWindow) frame.contentWindow.postMessage(JSON.stringify(m), '*'); };
+const toPreview = m => {
+  if (!frame.contentWindow) return;
+  if (m.t === 'icons' && state.iconsScale != null) {
+    // Logical native rectangles → preview-local physical-like coordinates. The
+    // iframe theme divides by its own DPR, never by the settings display's DPR.
+    const k = (frame.contentWindow.devicePixelRatio || 1) / state.iconsScale;
+    m = { ...m, r: m.r.map(rect => rect.map(n => n * k)) };
+  }
+  frame.contentWindow.postMessage(JSON.stringify(m), '*');
+};
 function screenCss() {
-  const k = window.devicePixelRatio || 1;
-  return { w: Math.round(state.screen.w / k), h: Math.round(state.screen.h / k) };
+  const k = state.screen.coordinateScale || window.devicePixelRatio || 1;
+  return { w: state.screen.w / k, h: state.screen.h / k };
 }
 function layoutPreview() {
   if (!state.screen) return;
@@ -676,7 +719,9 @@ function layoutPreview() {
 addEventListener('resize', layoutPreview);
 addEventListener('message', e => {
   if (e.source !== frame.contentWindow) return;
-  const m = JSON.parse(e.data);
+  let m;
+  try { m = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; } catch { return; }
+  if (!m || typeof m !== 'object') return;
   if (m.t === 'ready') {                 // 预览页面加载好了：先给设置，再给图标
     toPreview({ t: 'settings', v: valuesOf(themeById(state.theme)) });
     if (state.icons) toPreview(state.icons);
@@ -706,7 +751,7 @@ function showTheme() {
 let shareState = null;
 function shareBusy(which) {                                  // which：null（空闲）/ 'image' / 'video'
   shareState = which;
-  $('share').disabled = $('shareVideo').disabled = !!which;
+  $('share').disabled = $('shareVideo').disabled = !!which || state.capabilities.share === false;
   $('shareText').textContent = t(which === 'image' ? 'generating' : 'shareImage');
   $('shareVideoText').textContent = t(which === 'video' ? 'preparingRec' : 'shareVideo');
 }
@@ -734,6 +779,7 @@ function showShare(r) {
 }
 function closeShare() { $('shareModal').hidden = true; $('shareVid').pause(); }
 $('share').addEventListener('click', () => {
+  if (state.capabilities.share === false) return;
   shareBusy('image');
   if (host) { send({ t: 'share' }); return; }
   setTimeout(() => {                                         // 没有宿主：直接让预览里的页面画一张（让按钮先显示"正在生成…"）
@@ -744,6 +790,7 @@ $('share').addEventListener('click', () => {
   }, 30);
 });
 $('shareVideo').addEventListener('click', () => {
+  if (state.capabilities.share === false) return;
   shareBusy('video');
   if (host) { send({ t: 'shareVideo' }); return; }
   frame.contentWindow.desklandRecord(shareProgress).then(r => {   // 没有宿主：让预览里的页面录一段
@@ -781,28 +828,133 @@ addEventListener('keydown', e => { if (e.key === 'Escape') { closeShare(); close
 $('shareOpen').addEventListener('click', () => send({ t: 'openShare' }));
 $('shareReveal').addEventListener('click', () => send({ t: 'revealShare' }));
 
+/* ---------- 原生能力与明确的权限操作（不自动请求） ---------- */
+function showCapabilities() {
+  const caps = state.capabilities;
+  for (const id of ['share', 'shareVideo']) {
+    $(id).hidden = caps.share === false;
+    $(id).disabled = caps.share === false || !!shareState;
+  }
+  $('autostart').closest('label').hidden = caps.autostart === false;
+  $('autostart').disabled = caps.autostart === false;
+  if (caps.autostart === false) $('autostartWarn').hidden = true;
+  if (caps.updates === false) { $('updateNotice').hidden = true; $('updateProgram').disabled = true; }
+  showIconStatus();
+}
+function showIconStatus() {
+  const status = state.iconStatus;
+  const copy = lang === 'zh-CN' ? {
+    denied: '需要辅助功能权限，才能让壁纸响应桌面图标。请在系统设置中允许 Deskland Preview。',
+    unavailable: '暂时无法读取桌面图标。壁纸仍会继续运行。',
+    empty: '桌面上没有可读取的图标。壁纸仍会继续运行。',
+    action: '打开辅助功能设置'
+  } : {
+    denied: 'Allow Deskland Preview in Accessibility settings to let the wallpaper respond to desktop icons.',
+    unavailable: 'Desktop icons are currently unavailable. The wallpaper will keep running.',
+    empty: 'No desktop icons are available. The wallpaper will keep running.',
+    action: 'Open Accessibility settings'
+  };
+  $('iconPermission').hidden = !copy[status] || status === 'action';
+  $('iconPermissionText').textContent = copy[status] || '';
+  $('iconPermissionAction').textContent = copy.action;
+  $('iconPermissionAction').hidden = status !== 'denied';
+}
+$('iconPermissionAction').addEventListener('click', () => send({ t: 'requestAccessibility' }));
+// A failure is retained until an explicit retry of that mutation succeeds.
+// Later independent successes must not make an earlier failure disappear.
+function saveIdentity(m) {
+  return m.t === 'set' ? JSON.stringify([m.t, m.theme, m.key]) : JSON.stringify([m.t]);
+}
+function showSaveSummary() {
+  if (!state.capabilities.saveAcknowledgement) return;
+  clearTimeout(savedT);
+  const records = [...saveRequests.values()];
+  const failed = records.some(r => r.status === 'failed');
+  const pending = records.some(r => r.status === 'pending');
+  const text = lang === 'zh-CN' ?
+    { failed: '保存失败，请重试。', pending: '正在保存…', retry: '重试保存' } :
+    { failed: 'Could not save settings. Please retry.', pending: 'Saving…', retry: 'Retry saving' };
+  $('saved').textContent = failed ? text.failed : pending ? text.pending : state.saveConfirmed ? t('saved') : t('autosave');
+  $('saved').classList.toggle('flash', !failed && !pending && !!state.saveConfirmed);
+  $('retrySave').hidden = !failed;
+  $('retrySave').disabled = pending;
+  $('retrySave').textContent = text.retry;
+}
+function showSaveStatus(m) {
+  if (!state.capabilities.saveAcknowledgement || !Number.isSafeInteger(m.requestId) || typeof m.ok !== 'boolean') return;
+  const record = saveRequests.get(m.requestId);
+  if (!record || record.status !== 'pending') return; // unknown, duplicate or stale ACK
+  record.status = m.ok ? 'saved' : 'failed';
+  if (record.retryFor.length) {
+    if (m.ok) for (const id of record.retryFor) {
+      const original = saveRequests.get(id);
+      if (original && original.status === 'failed') original.status = 'retried';
+    }
+    // The originals remain failed on retry failure; do not create duplicate failures.
+    if (!m.ok) record.status = 'retryFailed';
+  }
+  state.saveConfirmed = true;
+  if (![...saveRequests.values()].some(r => r.status === 'failed' || r.status === 'pending')) saveRequests.clear();
+  showSaveSummary();
+}
+$('retrySave').addEventListener('click', () => {
+  if (!state.capabilities.saveAcknowledgement) return;
+  flush();
+  const entries = [...saveRequests.entries()];
+  if (entries.some(([, r]) => r.status === 'pending')) return;
+  const groups = new Map();
+  for (const [id, record] of entries) if (record.status === 'failed') {
+    const key = saveIdentity(record.message);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(id);
+  }
+  for (const [key, ids] of groups) {
+    // Use the latest requested value, not a stale failed slider value.
+    const latest = entries.filter(([, r]) => saveIdentity(r.message) === key && r.status !== 'retryFailed').at(-1)[1].message;
+    const { requestId, ...message } = latest;
+    send(message, ids);
+  }
+});
+
 /* ---------- 和宿主通信 ---------- */
 function onHost(m) {
   if (m.t === 'init') {
+    state.capabilities = m.capabilities || {};
+    state.iconsScale = m.iconsScale ?? m.screen?.coordinateScale ?? null;
+    state.iconStatus = typeof m.iconStatus === 'string' ? m.iconStatus : m.iconStatus?.status || '';
+    state.screen = m.screen;
     state.langSetting = m.lang || 'auto';
     state.langSys = m.langSys || 'zh-CN';
     setLang(m.langEff || state.langSys).then(() => {        // 先按界面语言把文字表读进来，再画界面
       state.theme = themeById(m.theme) && themeById(m.theme).status === 'ready' ? m.theme : 'beach';
       state.params = m.params || {};
-      state.screen = m.screen;
       $('autostart').checked = !!m.autostart;
       state.autostartWarn = !!m.autostartWarn;
       state.autostartSw = m.autostartSw || '';
       showAutostartWarn();
       showUpdate();
       showTheme();
+      showCapabilities();
       document.documentElement.classList.add('ready');
     });
+  } else if (m.t === 'screen') {
+    const s = m.screen;
+    if (!s || !Number.isFinite(s.w) || !Number.isFinite(s.h) || s.w <= 0 || s.h <= 0 ||
+        (s.coordinateScale != null && (!Number.isFinite(s.coordinateScale) || s.coordinateScale <= 0))) return;
+    state.screen = s;
+    layoutPreview();
   } else if (m.t === 'themeChanged') {
     if (!themeById(m.id) || themeById(m.id).status !== 'ready') return;
+    flush();
     state.theme = m.id;
     showTheme();
+  } else if (m.t === 'saveStatus') {
+    showSaveStatus(m);
+  } else if (m.t === 'iconStatus') {
+    state.iconStatus = m.status;
+    showIconStatus();
   } else if (m.t === 'updateState') {
+    if (state.capabilities.updates === false) return;
     state.updateVersion = String(m.version || '').trim();
     state.updateStatus = m.status || (state.updateVersion ? 'available' : '');
     state.updateProgress = typeof m.progress === 'number' ? m.progress : -1;
@@ -842,7 +994,10 @@ function mockHost() {
 fetch('themes.json').then(r => r.json()).then(reg => {
   state.registry0 = state.registry = reg;
   if (host) {
-    host.addEventListener('message', e => onHost(JSON.parse(e.data)));
+    host.addEventListener('message', e => {
+      try { const m = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; if (m && typeof m === 'object') onHost(m); }
+      catch (error) { console.warn('Invalid host message', error); }
+    });
     send({ t: 'hello' });
   } else mockHost();
 });

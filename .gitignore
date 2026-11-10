@@ -1,5 +1,4 @@
-/host/bin/
-/host/lib/
+/mac/build/
 /node_modules/
 /dist/
 /.vs/

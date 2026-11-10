@@ -1252,11 +1252,16 @@ function startHostedMode() {
     draw(performance.now());
   };
   const handle = m => {
+    if (typeof m === 'string') { try { m = JSON.parse(m); } catch { return; } }
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return;
+    if (m.t === 'pause' && typeof m.v !== 'boolean') return;
+    if ((m.t === 'settings' || m.t === 'reset') && m.v != null && (typeof m.v !== 'object' || Array.isArray(m.v))) return;
+    if (m.t === 'icons' && m.vis && (!Array.isArray(m.r) || !m.r.every(r => Array.isArray(r) && r.length === 4 && r.every(Number.isFinite)))) return;
     if (m.t === 'pause') { paused = PREVIEW ? false : m.v; settlePaused(); return; }
     if (m.t === 'settings') { applySettings(m.v || {}); return; }
     if (m.t === 'reset') { applySettings(Object.assign({}, DEFAULTS, m.v || {})); return; }
     if (m.t !== 'icons') return;
-    const k = window.devicePixelRatio || 1;       // 物理像素 → CSS 像素
+    const k = Number.isFinite(m.coordinateScale) && m.coordinateScale > 0 ? m.coordinateScale : window.devicePixelRatio || 1; // 物理像素或预览逻辑坐标 → CSS 像素
     icons = m.vis ? m.r.map(([l, t, r, b]) => ({ x: l / k, y: t / k, w: (r - l) / k, h: (b - t) / k })) : [];
     if (PREVIEW) drawGhosts();
     iconsSeen = true;
@@ -1265,13 +1270,13 @@ function startHostedMode() {
     settlePaused();
   };
   if (PREVIEW) {
-    addEventListener('message', ev => { if (ev.source === parent) handle(typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data); });
+    addEventListener('message', ev => { if (ev.source === parent) handle(ev.data); });
     parent.postMessage(JSON.stringify({ t: 'ready' }), '*');
     return;
   }
   const host = window.chrome && window.chrome.webview;
   if (!host) return;
-  host.addEventListener('message', ev => handle(JSON.parse(ev.data)));
+  host.addEventListener('message', ev => handle(ev.data));
   host.postMessage('ready');
 }
 </script>
