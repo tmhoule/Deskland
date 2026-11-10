@@ -20,6 +20,15 @@ DESKLAND_SIGNING_IDENTITY='YOUR DEVELOPMENT CERTIFICATE NAME OR SHA-1' bash mac/
 
 Use the same app path and identity each time. Development signing does not guarantee Accessibility trust and is not a notarized distribution signature. After changing signatures, add or re-enable this exact app in **System Settings → Privacy & Security → Accessibility**, then quit and reopen it. Do not reset the system privacy database. macOS versions vary in how their permissions list is edited.
 
+## Troubleshooting: icons stop generating land after a rebuild
+
+If the wallpaper renders a flat beach with **no sand/land around your desktop icons** (or the Settings live preview shows only icon placeholders), the usual cause is that the new binary **lost its Accessibility grant**, not a code regression.
+
+- The Finder icon provider returns an **empty icon list** when `AXIsProcessTrusted()` is false. With no icon geometry the renderer has nothing to raise land from, so it draws a flat scene while still running at full frame rate. The smoke test does **not** catch this: it passes with zero icons because it only verifies rendering, not Finder permission.
+- A rebuilt ad-hoc-signed binary has a **different code signature**, and macOS re-locks the Accessibility trust after rebuilds or app moves. So `bash mac/build.sh` (default ad-hoc signing) can silently drop the grant every time.
+- Recovery: quit the app, re-grant in **System Settings → Privacy & Security → Accessibility** for this exact app, then reopen. Or use the menu-bar **Enable Icon Adaptation…** action (and the Settings banner button) to re-prompt. The in-app menu-bar "Icons:" item and Diagnostics show whether the icon read is `ready` or `permissionRequired`.
+- To avoid the repeated re-grant, build with a stable Apple Development identity (`DESKLAND_SIGNING_IDENTITY=… bash mac/build.sh`) and keep the same app path; re-add the app to Accessibility once after changing the identity. Do **not** "fix" the missing land by inventing icon geometry or skipping the permission gate.
+
 ## Privacy and permission
 
 Without Accessibility access the wallpaper still renders. Settings shows an explicit onboarding banner when permission is needed. Only clicking its permission button or the menu-bar Enable Icon Adaptation action requests access. Nothing automatically changes system privacy settings. The provider reads Finder icon positions, not filenames, file contents, screenshots or telemetry. Geometry stays local.
